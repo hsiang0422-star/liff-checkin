@@ -135,8 +135,10 @@
 
 <script>
   // ⚙️ 系統設定
-  const MY_LIFF_ID = "2011810210-ESVfHIBL";
-  const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwHOCTSRe78iYaveaiZgsatnALzW6whRbDWENR6Mo1PSodNqTj8xC5xJ9ogMERZPgo3/exec";
+  // ⚠️ 請換成「您自己」的 LIFF ID 與 Apps Script 網頁應用程式網址（README 第二、三步）
+  const MY_LIFF_ID = "請填入您的_LIFF_ID";
+  const GAS_WEB_APP_URL = "請填入您的_GAS_WEB_APP_URL";
+  const IS_CONFIGURED = /^\d+-\w+$/.test(MY_LIFF_ID) && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(GAS_WEB_APP_URL);
 
   // 🌟 選項一：LocalStorage 快取管理 (達到「0 秒秒開」無感體驗)
   const CACHE_USER_KEY = "qrcode_checkin_user_profile";
@@ -181,6 +183,15 @@
   }
 
   window.onload = function() {
+    if (!IS_CONFIGURED) {
+      clearLocalUserCache();
+      const loadingEl = document.getElementById('loading');
+      loadingEl.style.display = 'block';
+      loadingEl.innerHTML = '⚙️ 簽到系統尚未完成設定<br><span style="font-size:14px;color:#666;">管理員請在 index.html 填入學校自己的 <b>LIFF ID</b> 與 <b>Apps Script 網址</b>，並從 LINE 官方帳號選單開啟本頁。</span>';
+      document.getElementById('checkInView').style.display = 'none';
+      document.getElementById('bindView').style.display = 'none';
+      return;
+    }
     liff.init({ liffId: MY_LIFF_ID })
       .then(() => {
         if (!liff.isLoggedIn()) {
