@@ -80,7 +80,8 @@
   * `ADMIN_CONTACT_NAME` -> 未綁定畫面顯示的管理員聯絡人姓名
   * `ADMIN_CONTACT_PHONE` -> 未綁定畫面顯示的聯絡電話 (`tel:`)
   * `LINE_CHANNEL_ACCESS_TOKEN` -> LINE Messaging API Long-lived Token（用於 Reply / Push 訊息）
-  * `LIFF_ID` -> 您的 LIFF ID（用於 LINE Bot 回覆按鈕中的 LIFF 連結，若未設定則 fallback 至程式碼預設值）
+  * `LIFF_ID` -> 您的 LIFF ID（**必填**：用於 LINE Bot 回覆按鈕中的 LIFF 連結，也用來推得驗證 ID Token 所需的 Channel ID）
+  * `LINE_LOGIN_CHANNEL_ID` -> （選填）LINE Login Channel ID；未設定時自動取 `LIFF_ID` 中「-」前面的數字
 
 ---
 
@@ -93,7 +94,7 @@
    * `const GAS_WEB_APP_URL = "..."` -> 替換為使用者部署 GAS Web App 後取得的 **`/exec` 網址**。
    * （選填）`<title>` 與預設頭銜 `" 老師"`（若應用於非學校機構，可改為 `" 同仁"`）。
 2. **後端 (`Code.gs`)**：
-   * 搜尋 `2011810210-ESVfHIBL`（共 2 處 fallback：`getAdminQuickReplyItems()` 與 `handleGeneralUserMessage()`），確保 `系統參數` 分頁有設定 `LIFF_ID`，或同步更新程式碼中的 fallback 字串。
+   * 確保 `系統參數` 分頁（或 Apps Script 指令碼屬性）有設定 `LIFF_ID`；後端會用它驗證前端送來的 LIFF ID Token，未設定時所有 API 請求都會被拒絕。
    * 若使用者所在時區非台灣 (UTC+8)，調整 `Utilities.formatDate(..., "Asia/Taipei", ...)`。
    * 建議設定 GAS 時間驅動觸發器（Time-driven Trigger）每 5~10 分鐘執行 `smartPing()`，在開會前 10 分鐘自動預熱試算表與快取，消除 GAS Cold Start 延遲。
 3. **LINE Developers 設定**：

@@ -186,6 +186,110 @@ function clearAllSystemCaches() {
 }
 
 // ==========================================
+// 🔐 安全性輔助函式
+// ==========================================
+function jsonOutput(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function sha256Key(prefix, text) {
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(text), Utilities.Charset.UTF_8);
+  return prefix + Utilities.base64EncodeWebSafe(digest);
+}
+
+// LINE Login Channel ID：優先讀取 LINE_LOGIN_CHANNEL_ID，否則由 LIFF_ID 的「-」前段推得
+function getLoginChannelId() {
+  const explicitId = getSystemSetting("LINE_LOGIN_CHANNEL_ID");
+  if (explicitId) return explicitId;
+  const liffId = getSystemSetting("LIFF_ID");
+  return liffId ? liffId.split("-")[0] : "";
+}
+
+// 向 LINE 驗證 LIFF ID Token，成功時回傳真實的 LINE userId (sub)，失敗回傳 null
+// 驗證結果以 Token 雜湊為鍵快取，避免每次請求都呼叫 LINE API
+function verifyLiffIdToken(idToken) {
+  if (!idToken || typeof idToken !== "string") return null;
+  const cache = getAppCache();
+  const cacheKey = sha256Key("IDT_", idToken);
+  const cachedSub = cache.get(cacheKey);
+  if (cachedSub) return cachedSub;
+
+  const channelId = getLoginChannelId();
+  if (!channelId) {
+    Logger.log("未設定 LIFF_ID 或 LINE_LOGIN_CHANNEL_ID，無法驗證 ID Token");
+    return null;
+  }
+
+  try {
+    const res = UrlFetchApp.fetch("https://api.line.me/oauth2/v2.1/verify", {
+      method: "post",
+      payload: { id_token: idToken, client_id: channelId },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) return null;
+    const body = JSON.parse(res.getContentText());
+    if (!body.sub) return null;
+    const secondsLeft = Math.floor(Number(body.exp) - Date.now() / 1000);
+    if (secondsLeft > 30) {
+      cache.put(cacheKey, body.sub, Math.min(secondsLeft, 21600));
+    }
+    return body.sub;
+  } catch (e) {
+    Logger.log("ID Token 驗證失敗：" + e);
+    return null;
+  }
+}
+
+// 嘗試次數限制：回傳 true 代表已超過上限
+function isRateLimited(key, maxAttempts) {
+  const count = Number(getAppCache().get(key) || 0);
+  return count >= maxAttempts;
+}
+
+function recordFailedAttempt(key, windowSeconds) {
+  const cache = getAppCache();
+  const count = Number(cache.get(key) || 0);
+  cache.put(key, String(count + 1), windowSeconds);
+}
+
+// 以文件鎖序列化「檢查重複 → 寫入」，避免同時簽到造成重複紀錄
+function withScriptLock(fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    return { success: false, message: "系統忙碌中，請稍候幾秒再試一次。" };
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 檢查今日某會議是否已有成功簽到紀錄 (倒序檢索)
+function hasCheckedInToday(recordSheet, meetingName, teacherName, lineUserId) {
+  if (!recordSheet) return false;
+  const lastRow = recordSheet.getLastRow();
+  if (lastRow <= 1) return false;
+  const todayStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd");
+  const records = recordSheet.getRange(2, 1, lastRow - 1, 5).getValues();
+  for (let i = records.length - 1; i >= 0; i--) {
+    if (!records[i][0]) continue;
+    const rTime = Utilities.formatDate(new Date(records[i][0]), "Asia/Taipei", "yyyy/MM/dd");
+    if (rTime !== todayStr && (records.length - i) > 100) break;
+    if (rTime !== todayStr) continue;
+
+    const rMeeting = records[i][1] ? records[i][1].toString().trim() : "";
+    const rName = records[i][2] ? records[i][2].toString().trim() : "";
+    const rLineId = records[i][3] ? records[i][3].toString().trim() : "";
+    const rStatus = records[i][4] ? records[i][4].toString().trim() : "";
+    if (rMeeting !== meetingName) continue;
+    if (rStatus !== "成功" && rStatus !== "管理員代簽") continue;
+    if ((lineUserId && rLineId === lineUserId) || (teacherName && rName === teacherName)) return true;
+  }
+  return false;
+}
+
+// ==========================================
 // API 主路由 ( doPost ) - 相容 LIFF 與 LINE Webhook
 // ==========================================
 function doPost(e) {
@@ -199,38 +303,50 @@ function doPost(e) {
     }
 
     // 2. 來自 GitHub Pages / LIFF 前端的 API 請求
+    // 🔐 安全性：不信任前端傳來的 myLineUserId，一律改用 LINE 驗證過的 ID Token 取得真實 userId
+    const verifiedUserId = verifyLiffIdToken(req.idToken);
+    if (!verifiedUserId) {
+      return jsonOutput({
+        success: false,
+        authError: true,
+        message: "⚠️ 身分驗證失敗或登入已逾時，請關閉頁面後從 LINE 重新開啟。"
+      });
+    }
+    const myLineUserId = verifiedUserId;
+
     const action = req.action;
     let result;
 
     switch (action) {
       case "getInitialData":
-        result = getInitialData(req.myLineUserId);
+        result = getInitialData(myLineUserId);
         break;
       case "bindUser":
-        result = bindUser(req.myLineUserId, req.name, req.idCode);
+        result = bindUser(myLineUserId, req.name, req.idCode);
         break;
       case "processQrCheckIn":
-        result = processQrCheckIn(req.myLineUserId, req.scannedCode);
+        result = processQrCheckIn(myLineUserId, req.scannedCode);
         break;
       case "getAdminDashboardData":
-        result = getAdminDashboardData(req.targetMeetingName, req.myLineUserId);
+        result = getAdminDashboardData(req.targetMeetingName, myLineUserId);
         break;
       case "adminManualCheckIn":
-        result = adminManualCheckIn(req.name, req.myLineUserId, req.targetMeetingName);
+        result = adminManualCheckIn(req.name, myLineUserId, req.targetMeetingName);
         break;
       case "sendReminders":
-        result = sendReminders(req.targetIds, req.meetingName);
+        result = sendReminders(myLineUserId, req.meetingName, req.targetNames);
+        break;
+      case "getMeetingSettingsData":
+        result = getMeetingSettingsData(myLineUserId);
+        break;
+      case "saveMeetingSetting":
+        result = saveMeetingSetting(myLineUserId, req.meetingData);
+        break;
+      case "toggleMeetingStatus":
+        result = toggleMeetingStatus(myLineUserId, req.rowIndex, req.newStatus);
         break;
       default:
         result = { success: false, message: "無效的操作指令" };
-      case "getMeetingSettingsData":
-        result = getMeetingSettingsData(req.myLineUserId);
-        break;
-      case "saveMeetingSetting":
-        result = saveMeetingSetting(req.myLineUserId, req.meetingData);
-        break;
-      case "toggleMeetingStatus":
-        result = toggleMeetingStatus(req.myLineUserId, req.rowIndex, req.newStatus);
         break;
     }
 
@@ -318,9 +434,9 @@ function getInitialData(myLineUserId) {
 
   // 3. 為每場會議標記是否已簽到 (isSigned)
   const meetingsWithStatus = activeMeetings.map(m => {
+    // 🔐 不回傳 passcode：驗證碼只應出現在會議現場，避免未到場者從 API 回應取得
     return {
       name: m.name,
-      passcode: m.passcode,
       target: m.target,
       isSigned: signedSet.has(m.name)
     };
@@ -345,46 +461,58 @@ function bindUser(myLineUserId, name, idCode) {
   const teacherSheet = ss.getSheetByName("教師主名單");
   if (!teacherSheet) return { success: false, message: "找不到「教師主名單」試算表！" };
 
-  const cleanInputIdCode = idCode.trim().padStart(3, '0');
-  const cleanInputName = name.trim();
+  const cleanInputIdCode = String(idCode || "").trim().padStart(3, '0');
+  const cleanInputName = String(name || "").trim();
+  if (!cleanInputName || !/^\d{3}$/.test(cleanInputIdCode)) {
+    return { success: false, message: "⚠️ 請輸入正確的姓名與 3 位數識別碼。" };
+  }
 
-  const data = teacherSheet.getDataRange().getValues();
-  let targetRowIndex = -1;
+  // 🔐 防暴力破解：每個 LINE 帳號 1 小時內最多失敗 5 次；每個姓名 1 小時內最多失敗 10 次
+  const userLimitKey = sha256Key("BINDFAIL_U_", myLineUserId);
+  const nameLimitKey = sha256Key("BINDFAIL_N_", cleanInputName);
+  if (isRateLimited(userLimitKey, 5) || isRateLimited(nameLimitKey, 10)) {
+    return { success: false, message: "⚠️ 嘗試次數過多，請 1 小時後再試，或直接聯絡管理員協助綁定。" };
+  }
 
-  for (let i = 1; i < data.length; i++) {
-    const rowName = data[i][0] ? data[i][0].toString().trim() : "";
-    let rowIdCode = data[i][1] !== undefined && data[i][1] !== null ? data[i][1].toString().trim() : "";
-    const rowLineId = data[i][2] ? data[i][2].toString().trim() : "";
+  return withScriptLock(() => {
+    const data = teacherSheet.getDataRange().getValues();
+    let targetRowIndex = -1;
 
-    if (rowIdCode.length > 0 && rowIdCode.length < 3) {
-      rowIdCode = rowIdCode.padStart(3, '0');
-    }
+    for (let i = 1; i < data.length; i++) {
+      const rowName = data[i][0] ? data[i][0].toString().trim() : "";
+      let rowIdCode = data[i][1] !== undefined && data[i][1] !== null ? data[i][1].toString().trim() : "";
+      const rowLineId = data[i][2] ? data[i][2].toString().trim() : "";
 
-    if (rowName === cleanInputName && rowIdCode === cleanInputIdCode) {
-      if (rowLineId !== "") {
-        if (rowLineId === myLineUserId) {
-          return { success: false, message: "您已完成綁定，無需重複操作。" };
-        } else {
+      // 同一個 LINE 帳號只能綁定一位教師
+      if (rowLineId && rowLineId === myLineUserId) {
+        return { success: false, message: "您已完成綁定，無需重複操作。" };
+      }
+
+      if (rowIdCode.length > 0 && rowIdCode.length < 3) {
+        rowIdCode = rowIdCode.padStart(3, '0');
+      }
+
+      if (targetRowIndex === -1 && rowName === cleanInputName && rowIdCode === cleanInputIdCode) {
+        if (rowLineId !== "") {
           return { success: false, message: "⚠️ 此身分已被其他 LINE 帳號綁定，若有疑慮請聯絡管理員。" };
         }
+        targetRowIndex = i + 1;
       }
-      targetRowIndex = i + 1;
-      break;
     }
-  }
 
-  if (targetRowIndex === -1) {
-    return { success: false, message: "⚠️ 查無此人或身分識別碼錯誤！請確認輸入是否正確。" };
-  }
+    if (targetRowIndex === -1) {
+      recordFailedAttempt(userLimitKey, 3600);
+      recordFailedAttempt(nameLimitKey, 3600);
+      return { success: false, message: "⚠️ 查無此人或身分識別碼錯誤！請確認輸入是否正確。" };
+    }
 
-  const nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd HH:mm:ss");
-  teacherSheet.getRange(targetRowIndex, 3).setValue(myLineUserId);
-  teacherSheet.getRange(targetRowIndex, 4).setValue("已綁定");
-  teacherSheet.getRange(targetRowIndex, 5).setValue(nowStr);
+    const nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd HH:mm:ss");
+    teacherSheet.getRange(targetRowIndex, 3, 1, 3).setValues([[myLineUserId, "已綁定", nowStr]]);
 
-  clearTeacherCache(); // 清除快取，使新綁定即時生效
+    clearTeacherCache(); // 清除快取，使新綁定即時生效
 
-  return { success: true, message: "🎉 身分綁定成功！" };
+    return { success: true, message: "🎉 身分綁定成功！" };
+  });
 }
 
 // ==========================================
@@ -396,79 +524,68 @@ function processQrCheckIn(myLineUserId, scannedCode) {
     return { success: false, message: "請先完成身分綁定！" };
   }
 
+  // 🔐 防止猜測 4 位數驗證碼：每個 LINE 帳號 10 分鐘內最多錯誤 10 次
+  const codeLimitKey = sha256Key("CODEFAIL_", myLineUserId);
+  if (isRateLimited(codeLimitKey, 10)) {
+    return { success: false, message: "⚠️ 驗證碼錯誤次數過多，請 10 分鐘後再試，或請會議管理員協助代簽。" };
+  }
+
   const teacherName = teacherInfo.name;
   const teacherGroup = teacherInfo.group;
+  const cleanCode = String(scannedCode || "").trim();
 
   const activeMeetings = getActiveMeetingsForUser(teacherName, teacherGroup);
   if (!activeMeetings || activeMeetings.length === 0) {
     return { success: false, message: "您目前無需要參加的開會場次，或已超過簽到時間。" };
   }
 
-  const targetMeeting = activeMeetings.find(m => m.passcode && m.passcode.trim() === scannedCode.trim());
+  const targetMeeting = cleanCode
+    ? activeMeetings.find(m => m.passcode && m.passcode.trim() === cleanCode)
+    : null;
 
   if (!targetMeeting) {
+    recordFailedAttempt(codeLimitKey, 600);
     return { success: false, message: "⚠️ 簽到失敗：條碼不符！您掃描的不是您當前需參加會議的官方 QR Code。" };
   }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const recordSheet = ss.getSheetByName("簽到紀錄");
-  const todayStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd");
-  if (recordSheet) {
-    const lastRow = recordSheet.getLastRow();
-    if (lastRow > 1) {
-      const records = recordSheet.getRange(2, 1, lastRow - 1, 5).getValues();
-      for (let i = records.length - 1; i >= 0; i--) {
-        if (!records[i][0]) continue;
-        const rTime = Utilities.formatDate(new Date(records[i][0]), "Asia/Taipei", "yyyy/MM/dd");
-        if (rTime !== todayStr && (records.length - i) > 100) break;
+  if (!recordSheet) return { success: false, message: "找不到「簽到紀錄」試算表！" };
 
-        const rMeeting = records[i][1];
-        const rLineId = records[i][3];
-        const rStatus = records[i][4];
-
-        if (rTime === todayStr && rMeeting === targetMeeting.name && rLineId === myLineUserId) {
-          if (rStatus === "成功" || rStatus === "管理員代簽") {
-            return { success: false, message: `您剛才已完成【${targetMeeting.name}】的簽到，請勿重複簽到！` };
-          }
-        }
-      }
+  return withScriptLock(() => {
+    if (hasCheckedInToday(recordSheet, targetMeeting.name, teacherName, myLineUserId)) {
+      return { success: false, message: `您剛才已完成【${targetMeeting.name}】的簽到，請勿重複簽到！` };
     }
-  }
 
-  const nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd HH:mm:ss");
-  if (recordSheet) {
+    const nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd HH:mm:ss");
     recordSheet.appendRow([
-      nowStr, targetMeeting.name, teacherName, myLineUserId, 
+      nowStr, targetMeeting.name, teacherName, myLineUserId,
       "成功", "QR碼驗證通過", "-", "-", "掃描簽到"
     ]);
-  }
 
-  return { success: true, message: `🎉 【${targetMeeting.name}】簽到成功！` };
+    return { success: true, message: `🎉 【${targetMeeting.name}】簽到成功！` };
+  });
 }
 
 // ==========================================
 // 4. 管理員看板與相關邏輯 (支援分權管理)
 // ==========================================
-function getAdminDashboardData(targetMeetingName, myLineUserId) {
-  // 1. 取得請求者姓名
+// 取得請求者「有權限管理」且名稱相符的會議；無權限時回傳 null
+function resolveManageableMeeting(myLineUserId, targetMeetingName, allowFallback) {
   const teacherInfo = getTeacherInfoByLineId(myLineUserId);
   const userName = teacherInfo ? teacherInfo.name : "";
-
-  // 2. 取得該使用者「有權限管理」的所有會議清單
   const manageableMeetings = getManageableMeetingsForUser(userName, myLineUserId);
-  if (manageableMeetings.length === 0) {
-    return { success: false, message: "⚠️ 您無權限開啟管理員看板或當前無可管理的會議。" };
-  }
+  if (manageableMeetings.length === 0) return null;
 
-  // 3. 確定當前選擇的會議
-  let meetingInfo = null;
-  if (targetMeetingName) {
-    meetingInfo = manageableMeetings.find(m => m.name === targetMeetingName);
-  }
-  if (!meetingInfo) {
-    meetingInfo = manageableMeetings[0];
-  }
+  let meetingInfo = targetMeetingName ? manageableMeetings.find(m => m.name === targetMeetingName) : null;
+  if (!meetingInfo && allowFallback) meetingInfo = manageableMeetings[0];
+  if (!meetingInfo) return null;
 
+  return { meetingInfo: meetingInfo, manageableMeetings: manageableMeetings, userName: userName };
+}
+
+// 計算某會議今日的應到 / 已到 / 未到名單 (伺服器端計算，不信任前端資料)
+function computeMeetingAttendance(meetingInfo) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const recordSheet = ss.getSheetByName("簽到紀錄");
   const todayStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd");
@@ -484,57 +601,94 @@ function getAdminDashboardData(targetMeetingName, myLineUserId) {
     }
   }
 
-  const uncheckedList = [];
+  const uncheckedTeachers = [];
   let totalCount = 0;
+  let checkedCount = 0;
   const teachers = getCachedTeachers();
   for (let i = 0; i < teachers.length; i++) {
-    const tName = teachers[i].name;
-    if (!tName) continue;
-    const tGroup = teachers[i].group;
-
-    if (isTeacherMatchMeetingTarget(tName, tGroup, meetingInfo.target)) {
-      totalCount++;
-      if (!checkedSet.has(tName)) {
-        uncheckedList.push({
-          name: tName,
-          lineUserId: teachers[i].lineUserId,
-          isBound: teachers[i].status === "已綁定"
-        });
-      }
+    const t = teachers[i];
+    if (!t.name) continue;
+    if (!isTeacherMatchMeetingTarget(t.name, t.group, meetingInfo.target)) continue;
+    totalCount++;
+    if (checkedSet.has(t.name)) {
+      checkedCount++;
+    } else {
+      uncheckedTeachers.push(t);
     }
   }
+  return { totalCount: totalCount, checkedCount: checkedCount, uncheckedTeachers: uncheckedTeachers };
+}
+
+function getAdminDashboardData(targetMeetingName, myLineUserId) {
+  const resolved = resolveManageableMeeting(myLineUserId, targetMeetingName, true);
+  if (!resolved) {
+    return { success: false, message: "⚠️ 您無權限開啟管理員看板或當前無可管理的會議。" };
+  }
+  const meetingInfo = resolved.meetingInfo;
+  const stats = computeMeetingAttendance(meetingInfo);
 
   return {
     success: true,
     data: {
       meetingName: meetingInfo.name,
-      totalCount: totalCount,
-      checkedCount: checkedSet.size,
-      uncheckedList: uncheckedList,
-      allMeetings: manageableMeetings.map(m => m.name) // 僅傳回該使用者可管理的會議選單
+      totalCount: stats.totalCount,
+      checkedCount: stats.checkedCount,
+      // 🔐 不回傳其他同仁的 LINE User ID
+      uncheckedList: stats.uncheckedTeachers.map(t => ({
+        name: t.name,
+        isBound: t.status === "已綁定" && !!t.lineUserId
+      })),
+      allMeetings: resolved.manageableMeetings.map(m => m.name) // 僅傳回該使用者可管理的會議選單
     }
   };
 }
 
 function adminManualCheckIn(name, myLineUserId, targetMeetingName) {
+  // 🔐 必須是該會議的管理員 (或最高系統管理員) 才能代簽
+  const resolved = resolveManageableMeeting(myLineUserId, targetMeetingName, false);
+  if (!resolved) {
+    return { success: false, message: "⚠️ 權限不足：您不是此會議的管理員，無法代簽。" };
+  }
+  const meetingInfo = resolved.meetingInfo;
+  const adminName = resolved.userName || "系統管理員";
+
+  const cleanName = String(name || "").trim();
+  const target = getCachedTeachers().find(t => t.name === cleanName);
+  if (!target || !isTeacherMatchMeetingTarget(target.name, target.group, meetingInfo.target)) {
+    return { success: false, message: `⚠️ ${cleanName || "此同仁"} 不在【${meetingInfo.name}】的應到名單中。` };
+  }
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const recordSheet = ss.getSheetByName("簽到紀錄");
-  
-  const teacherInfo = getTeacherInfoByLineId(myLineUserId);
-  const adminName = teacherInfo ? teacherInfo.name : "管理員";
+  if (!recordSheet) return { success: false, message: "找不到「簽到紀錄」試算表！" };
 
-  const meetingInfo = getMeetingByName(targetMeetingName) || getLatestEnabledMeeting();
-
-  const nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd HH:mm:ss");
-  recordSheet.appendRow([nowStr, meetingInfo.name, name, "-", "管理員代簽", "-", "-", "-", `代簽 (${adminName})`]);
-  return { success: true, message: `已成功為 ${name} 老師手動代簽【${meetingInfo.name}】！` };
+  return withScriptLock(() => {
+    if (hasCheckedInToday(recordSheet, meetingInfo.name, target.name, target.lineUserId)) {
+      return { success: false, message: `${target.name} 老師今日已完成【${meetingInfo.name}】簽到。` };
+    }
+    const nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy/MM/dd HH:mm:ss");
+    recordSheet.appendRow([nowStr, meetingInfo.name, target.name, target.lineUserId || "-", "管理員代簽", "-", "-", "-", `代簽 (${adminName})`]);
+    return { success: true, message: `已成功為 ${target.name} 老師手動代簽【${meetingInfo.name}】！` };
+  });
 }
 
-function sendReminders(targetIds, meetingName) {
+// targetNames：管理員勾選的同仁姓名；伺服器只會發送給「該會議應到、尚未簽到且已綁定」的同仁
+function sendReminders(myLineUserId, meetingName, targetNames) {
+  const resolved = resolveManageableMeeting(myLineUserId, meetingName, false);
+  if (!resolved) {
+    return { success: false, message: "⚠️ 權限不足：您不是此會議的管理員，無法發送提醒。" };
+  }
+  const meetingInfo = resolved.meetingInfo;
+
   const token = getSystemSetting("LINE_CHANNEL_ACCESS_TOKEN");
   if (!token) return { success: false, message: "未設定 LINE_CHANNEL_ACCESS_TOKEN！" };
-  const validIds = targetIds.filter(id => id && id.trim() !== "");
-  if (validIds.length === 0) return { success: false, message: "未簽到同仁皆尚未綁定 LINE 帳號。" };
+
+  const wanted = Array.isArray(targetNames) ? new Set(targetNames.map(n => String(n).trim())) : null;
+  const stats = computeMeetingAttendance(meetingInfo);
+  const validIds = stats.uncheckedTeachers
+    .filter(t => t.lineUserId && (!wanted || wanted.has(t.name)))
+    .map(t => t.lineUserId);
+  if (validIds.length === 0) return { success: false, message: "勾選的同仁皆已簽到或尚未綁定 LINE 帳號。" };
 
   let successCount = 0;
   validIds.forEach(id => {
@@ -542,7 +696,7 @@ function sendReminders(targetIds, meetingName) {
       to: id,
       messages: [{
         type: "text",
-        text: `🔔 【會議簽到提醒】\n您好：「${meetingName}」目前開放簽到中，請點開選單並【掃描現場 QR Code】完成簽到。`
+        text: `🔔 【會議簽到提醒】\n您好：「${meetingInfo.name}」目前開放簽到中，請點開選單並【掃描現場 QR Code】完成簽到。`
       }]
     };
     try {
@@ -713,6 +867,12 @@ function parseTimeToMinutes(timeVal) {
 // ==========================================
 function getSystemSetting(keyName) {
   if (!keyName) return "";
+  // 🔐 機敏設定 (例如 LINE_CHANNEL_ACCESS_TOKEN) 建議存放於「專案設定 > 指令碼屬性」，
+  //    避免能檢視試算表的人看到 Token；找不到時才退回讀取「系統參數」工作表 (相容舊版)
+  try {
+    const propValue = PropertiesService.getScriptProperties().getProperty(keyName.trim().toUpperCase());
+    if (propValue) return propValue.trim();
+  } catch (e) {}
   const searchKey = keyName.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   const settings = getCachedSystemSettings();
   return settings[searchKey] || "";
@@ -786,7 +946,7 @@ function handleLineWebhook(events) {
 
 // 產生管理員專屬的 Quick Reply 橫向快捷按鈕 (點擊直接送出指令)
 function getAdminQuickReplyItems() {
-  const liffUrl = "https://liff.line.me/" + (getSystemSetting("LIFF_ID") || "2011810210-ESVfHIBL");
+  const liffUrl = "https://liff.line.me/" + getSystemSetting("LIFF_ID");
   return [
     {
       type: "action",
@@ -868,7 +1028,7 @@ function sendAdminMenu(userId, replyToken, userName) {
 
 // 一般同仁訊息引導
 function handleGeneralUserMessage(userId, replyToken, userText, teacherInfo) {
-  const liffUrl = "https://liff.line.me/" + (getSystemSetting("LIFF_ID") || "2011810210-ESVfHIBL");
+  const liffUrl = "https://liff.line.me/" + getSystemSetting("LIFF_ID");
   if (teacherInfo && teacherInfo.name) {
     replyLineMessage(replyToken, [{
       type: "text",
@@ -1368,19 +1528,25 @@ function saveMeetingSetting(myLineUserId, meetingData) {
   const sheet = ss.getSheetByName("會議地點與時間設定");
   if (!sheet) return { success: false, message: "找不到「會議地點與時間設定」頁籤！" };
 
-  const rowIndex = meetingData.rowIndex;
+  if (!meetingData || !String(meetingData.name || "").trim()) {
+    return { success: false, message: "⚠️ 會議名稱不可空白！" };
+  }
+  const rowIndex = Number(meetingData.rowIndex) || 0;
+  if (rowIndex && !isValidMeetingRow(sheet, rowIndex)) {
+    return { success: false, message: "⚠️ 找不到要編輯的會議列，請重新整理後再試。" };
+  }
   const rowValues = [
-    meetingData.name,
-    meetingData.dateRule,
-    meetingData.startTime,
-    meetingData.endTime,
-    meetingData.passcode,
-    meetingData.status,
-    meetingData.target || "全體",
-    meetingData.meetingAdmins || ""
+    sanitizeCellText(meetingData.name),
+    sanitizeCellText(meetingData.dateRule),
+    sanitizeCellText(meetingData.startTime),
+    sanitizeCellText(meetingData.endTime),
+    sanitizeCellText(meetingData.passcode),
+    meetingData.status === "啟用" ? "啟用" : "停用",
+    sanitizeCellText(meetingData.target) || "全體",
+    sanitizeCellText(meetingData.meetingAdmins)
   ];
 
-  if (rowIndex && rowIndex > 1) {
+  if (rowIndex) {
     // 編輯現有會議
     sheet.getRange(rowIndex, 1, 1, 8).setValues([rowValues]);
     clearMeetingCache(); // 清除快取
@@ -1402,7 +1568,22 @@ function toggleMeetingStatus(myLineUserId, rowIndex, newStatus) {
   const sheet = ss.getSheetByName("會議地點與時間設定");
   if (!sheet) return { success: false, message: "找不到「會議地點與時間設定」頁籤！" };
 
+  rowIndex = Number(rowIndex) || 0;
+  if (!isValidMeetingRow(sheet, rowIndex)) {
+    return { success: false, message: "⚠️ 找不到該會議列，請重新整理後再試。" };
+  }
+  newStatus = newStatus === "啟用" ? "啟用" : "停用";
   sheet.getRange(rowIndex, 6).setValue(newStatus); // 修改 F 欄啟用狀態
   clearMeetingCache(); // 清除快取
   return { success: true, message: `已將該會議切換為【${newStatus}】！` };
+}
+
+function isValidMeetingRow(sheet, rowIndex) {
+  return Number.isInteger(rowIndex) && rowIndex > 1 && rowIndex <= sheet.getLastRow();
+}
+
+// 避免寫入以 = + - @ 開頭的字串被試算表當成公式執行
+function sanitizeCellText(value) {
+  const text = value === undefined || value === null ? "" : String(value).trim();
+  return /^[=+\-@]/.test(text) ? "'" + text : text;
 }
