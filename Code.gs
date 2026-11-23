@@ -154,14 +154,14 @@ function getCachedSystemSettings() {
         settings[key] = data[i][1] ? data[i][1].toString().trim() : "";
       }
     }
-    if (!settings["ADMIN_CONTACT_NAME"] && sheet.getRange("B1").getValue()) {
-      settings["ADMIN_CONTACT_NAME"] = sheet.getRange("B1").getValue().toString().trim();
+    if (!settings["ADMINCONTACTNAME"] && sheet.getRange("B1").getValue()) {
+      settings["ADMINCONTACTNAME"] = sheet.getRange("B1").getValue().toString().trim();
     }
-    if (!settings["ADMIN_CONTACT_PHONE"] && sheet.getRange("B2").getValue()) {
-      settings["ADMIN_CONTACT_PHONE"] = sheet.getRange("B2").getValue().toString().trim();
+    if (!settings["ADMINCONTACTPHONE"] && sheet.getRange("B2").getValue()) {
+      settings["ADMINCONTACTPHONE"] = sheet.getRange("B2").getValue().toString().trim();
     }
-    if (!settings["LINE_CHANNEL_ACCESS_TOKEN"] && sheet.getRange("B3").getValue()) {
-      settings["LINE_CHANNEL_ACCESS_TOKEN"] = sheet.getRange("B3").getValue().toString().trim();
+    if (!settings["LINECHANNELACCESSTOKEN"] && sheet.getRange("B3").getValue()) {
+      settings["LINECHANNELACCESSTOKEN"] = sheet.getRange("B3").getValue().toString().trim();
     }
   }
   try {

@@ -3,6 +3,11 @@
 > 一套專為學校與機關設計的極速、分權、零維護成本的 LINE LIFF 會議簽到與管理系統。  
 > 具備 **前端 LocalStorage「0 秒秒開」** 與 **後端 GAS CacheService「記憶體快取加速」**，並整合 **LINE Bot 管理員點擊式指令選單**。
 
+### 🔗 快速導覽
+* 📖 **給老師與主辦人看的操作手冊**：[USER_GUIDE.md（佈署後日常操作流程）](USER_GUIDE.md)
+* 📦 **直接下載範本改一改就能用**：[templates/（含試算表 `.xlsx` 範本、`.csv` 與網頁範本）](templates/)
+* 🤖 **請 AI 幫你自動佈署的規格書**：[AI_DEPLOYMENT_SPEC.md（AI 專用技術規格與提示詞）](AI_DEPLOYMENT_SPEC.md)
+
 ---
 
 ## 🌟 核心特色
@@ -57,12 +62,47 @@ flowchart LR
 ## 📂 專案檔案結構
 
 ```text
-├── index.html          # LIFF 前端單頁應用 (Vue/原生 JS，支援 LocalStorage 秒開)
-├── Code.gs             # 後端主程式 (API 路由、CacheService、LINE Webhook、試算表工具)
-├── TagDialog.html      # 試算表內建視窗：批次設定教師職務標籤
-├── QRCodeDialog.html   # 試算表內建視窗：會議驗證碼條碼預覽與下載
-├── ReportDialog.html   # 試算表內建視窗：一鍵產生成果統計報表
-└── README.md           # 專案說明文件與部署教學
+├── index.html                  # LIFF 前端單頁應用 (支援 LocalStorage 秒開)
+├── Code.gs                     # 後端主程式 (API 路由、CacheService、LINE Webhook、試算表工具)
+├── TagDialog.html              # 試算表內建視窗：批次設定教師職務標籤
+├── QRCodeDialog.html           # 試算表內建視窗：會議驗證碼條碼預覽與下載
+├── ReportDialog.html           # 試算表內建視窗：一鍵產生成果統計報表
+├── USER_GUIDE.md               # 📖 一般使用者與管理員操作手冊 (佈署後流程)
+├── AI_DEPLOYMENT_SPEC.md       # 🤖 給 AI 閱讀的系統規格書與自動佈署指令
+├── README.md                   # 專案說明文件與部署教學
+└── templates/                  # 📦 可直接下載修改的範本資料夾
+    ├── 學校會議簽到系統_試算表範本.xlsx  # 一鍵匯入 Google Sheets 的 5 分頁整合範本
+    ├── index.template.html             # 含參數佔位符的前端網頁範本
+    ├── 教師主名單.csv
+    ├── 會議地點與時間設定.csv
+    ├── 簽到紀錄.csv
+    ├── 管理員名單.csv
+    └── 系統參數.csv
+```
+
+---
+
+## 📦 下載範本（有興趣的人可直接下載自行修改）
+
+不想自己從零建試算表欄位嗎？您可以直接下載 [`templates/`](templates/) 資料夾中的範本：
+
+1. **Google 試算表完整範本（最推薦）**：
+   * 下載 [`templates/學校會議簽到系統_試算表範本.xlsx`](templates/%E5%AD%B8%E6%A0%A1%E6%9C%83%E8%AD%B0%E7%B0%BD%E5%88%B0%E7%B3%BB%E7%B5%B1_%E8%A9%A6%E7%AE%97%E8%A1%A8%E7%AF%84%E6%9C%AC.xlsx)
+   * 上傳至您的 Google 雲端硬碟 → 點兩下開啟 → 點選上方 **「檔案」>「另存為 Google 試算表」**，即可一次獲得設定好欄位、格式與範例資料的 5 個工作表！
+2. **單一工作表 CSV 範本**（UTF-8 BOM 編碼，Excel 與試算表皆不亂碼）：
+   * [`教師主名單.csv`](templates/%E6%95%99%E5%B8%AB%E4%B8%BB%E5%90%8D%E5%96%AE.csv) | [`會議地點與時間設定.csv`](templates/%E6%9C%83%E8%AD%B0%E5%9C%B0%E9%BB%9E%E8%88%87%E6%99%82%E9%96%93%E8%A8%AD%E5%AE%9A.csv) | [`簽到紀錄.csv`](templates/%E7%B0%BD%E5%88%B0%E7%B4%80%E9%8C%84.csv) | [`管理員名單.csv`](templates/%E7%AE%A1%E7%90%86%E5%93%A1%E5%90%8D%E5%96%AE.csv) | [`系統參數.csv`](templates/%E7%B3%BB%E7%B5%B1%E5%8F%83%E6%95%B8.csv)
+3. **乾淨前端網頁範本**：
+   * 下載 [`templates/index.template.html`](templates/index.template.html)，替換其中的 `MY_LIFF_ID` 與 `GAS_WEB_APP_URL` 並重新命名為 `index.html` 即可部署。
+
+---
+
+## 🤖 使用 AI 快速佈署（給想請 AI 幫忙的人）
+
+本專案提供專為 AI 助手設計的技術規格書：[**`AI_DEPLOYMENT_SPEC.md`**](AI_DEPLOYMENT_SPEC.md)。  
+只要將本專案匯入您的 AI 工具（Antigravity、Cursor、Claude、ChatGPT 等），並貼上以下指令：
+
+```text
+請閱讀這個專案的 AI_DEPLOYMENT_SPEC.md 與 README.md，一步步引導我輸入自己的 Google 試算表、GAS Web App URL、LINE Bot Token 與 LIFF ID，幫我修改檔案並完成部署與測試。
 ```
 
 ---
@@ -145,6 +185,28 @@ flowchart LR
 
 ---
 
+## 🧑‍🤝‍🧑 佈署完畢後的日常操作流程（給一般使用者與管理員）
+
+> 完整圖文說明與細節請參閱：[**📖 USER_GUIDE.md（一般人專用操作手冊）**](USER_GUIDE.md)
+
+### 1. 一般教師（參加會議者）
+1. **首次綁定（只需做一次）**：點開學校 LINE 官方帳號選單 → 輸入「真實姓名」與「薪資識別碼末 3 碼」→ 完成綁定。
+2. **日常簽到（0 秒秒開）**：
+   * 打開頁面即瞬間顯示您的姓名與今日會議卡片（🟠 橘色代表待簽到、🟢 綠色代表已完成）。
+   * 點擊 **「📷 掃描現場 QR Code 簽到」** 掃描現場條碼，或點 **「⌨️ 輸入驗證碼簽到 (備援)」** 輸入 4 碼數字即可完成簽到。
+
+### 2. 會議主辦人 / 管理員（開會標準流程 SOP）
+```mermaid
+flowchart LR
+    S1["1️⃣ 會前設定<br/>手機或試算表新增會議<br/>狀態設為『啟用』"] --> S2["2️⃣ 投影條碼<br/>LINE 點『📷 索取條碼』<br/>或試算表彈窗下載大圖"]
+    S2 --> S3["3️⃣ 會中催簽/代簽<br/>LINE 查『📊 簽到概況』<br/>看板一鍵提醒或代簽"]
+    S3 --> S4["4️⃣ 會後報表<br/>試算表選單一鍵產出<br/>出席統計工作表"]
+```
+
+* **小提示（取得最高管理員 LINE ID）**：首次佈署後，管理員只要先用一般教師身分完成一次綁定，再到試算表 `教師主名單` 複製自己的 **C 欄（`U` 開頭的 LINE User ID）** 貼到 `管理員名單` B 欄並清除快取，即可立刻解鎖最高管理員與 LINE Bot 選單權限！
+
+---
+
 ## 💡 常見問題與管理員操作指南
 
 1. **若我在 Google Sheets 修改了教師職務或開會時間，多久會生效？**
@@ -158,3 +220,4 @@ flowchart LR
 
 ## 📄 License
 MIT License
+
