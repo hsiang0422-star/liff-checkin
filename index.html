@@ -135,8 +135,10 @@
 
 <script>
   // ⚙️ 系統設定
-  const MY_LIFF_ID = "2011810210-ESVfHIBL";
-  const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwHOCTSRe78iYaveaiZgsatnALzW6whRbDWENR6Mo1PSodNqTj8xC5xJ9ogMERZPgo3/exec";
+  // ⚠️ 請換成「您自己」的 LIFF ID 與 Apps Script 網頁應用程式網址（README 第二、三步）
+  const MY_LIFF_ID = "請填入您的_LIFF_ID";
+  const GAS_WEB_APP_URL = "請填入您的_GAS_WEB_APP_URL";
+  const IS_CONFIGURED = /^\d+-\w+$/.test(MY_LIFF_ID) && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(GAS_WEB_APP_URL);
 
   // 🌟 選項一：LocalStorage 快取管理 (達到「0 秒秒開」無感體驗)
   const CACHE_USER_KEY = "qrcode_checkin_user_profile";
@@ -181,6 +183,15 @@
   }
 
   window.onload = function() {
+    if (!IS_CONFIGURED) {
+      clearLocalUserCache();
+      const loadingEl = document.getElementById('loading');
+      loadingEl.style.display = 'block';
+      loadingEl.innerHTML = '⚙️ 簽到系統尚未完成設定<br><span style="font-size:14px;color:#666;">管理員請在 index.html 填入學校自己的 <b>LIFF ID</b> 與 <b>Apps Script 網址</b>，並從 LINE 官方帳號選單開啟本頁。</span>';
+      document.getElementById('checkInView').style.display = 'none';
+      document.getElementById('bindView').style.display = 'none';
+      return;
+    }
     liff.init({ liffId: MY_LIFF_ID })
       .then(() => {
         if (!liff.isLoggedIn()) {
@@ -221,13 +232,43 @@
       });
   };
 
+  // 🔐 每個請求都附上 LIFF ID Token，後端會向 LINE 驗證後才採信使用者身分
+  let hasShownAuthError = false;
   function callGasApi(action, extraData = {}) {
-    const payload = Object.assign({ action: action }, extraData);
+    let idToken = "";
+    try {
+      idToken = liff.getIDToken() || "";
+    } catch (e) {
+      console.warn("無法取得 LIFF ID Token：", e);
+    }
+    const payload = Object.assign({}, extraData, { action: action, idToken: idToken });
     return fetch(GAS_WEB_APP_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify(payload)
-    }).then(res => res.json());
+    })
+      .then(res => res.json())
+      .then(res => {
+        if (res && res.authError) {
+          clearLocalUserCache();
+          if (!hasShownAuthError) {
+            hasShownAuthError = true;
+            alert(res.message || "身分驗證失敗，請從 LINE 重新開啟本頁。");
+          }
+          throw new Error("AUTH_ERROR");
+        }
+        return res;
+      });
+  }
+
+  // 將文字轉為安全的 HTML，避免名單或會議名稱中的特殊字元破壞頁面
+  function escapeHtml(value) {
+    return String(value === undefined || value === null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   // 繪製多會議卡片列表
@@ -262,14 +303,14 @@
         // 已簽到：綠色卡片
         html += `
           <div style="background:#e6f4ea; border:1px solid #137333; padding:12px 15px; border-radius:8px; margin-bottom:10px; text-align:left;">
-            <div style="color:#137333; font-weight:bold; font-size:16px;">🟢 【${m.name}】</div>
+            <div style="color:#137333; font-weight:bold; font-size:16px;">🟢 【${escapeHtml(m.name)}】</div>
             <div style="color:#202124; font-size:13px; margin-top:4px;">✅ 您已完成簽到</div>
           </div>`;
       } else {
         // 未簽到：橘色卡片
         html += `
           <div style="background:#fef7e0; border:1px solid #b06000; padding:12px 15px; border-radius:8px; margin-bottom:10px; text-align:left;">
-            <div style="color:#b06000; font-weight:bold; font-size:16px;">📍 【${m.name}】開放簽到中</div>
+            <div style="color:#b06000; font-weight:bold; font-size:16px;">📍 【${escapeHtml(m.name)}】開放簽到中</div>
             <div style="color:#5f6368; font-size:13px; margin-top:4px;">👉 請點擊下方按鈕，掃描現場條碼或輸入驗證碼完成簽到。</div>
           </div>`;
       }
@@ -479,17 +520,17 @@
         d.uncheckedList.forEach(u => {
           const boundBadge = u.isBound ? '<span class="badge badge-success">已綁定</span>' : '<span class="badge badge-danger">未綁定</span>';
           
-          const checkboxHtml = u.isBound && u.lineUserId
-            ? `<input type="checkbox" class="remind-checkbox" value="${u.lineUserId}" checked style="width:20px; height:20px; margin:0; cursor:pointer;" title="勾選發送提醒">`
+          const checkboxHtml = u.isBound
+            ? `<input type="checkbox" class="remind-checkbox" value="${escapeHtml(u.name)}" checked style="width:20px; height:20px; margin:0; cursor:pointer;" title="勾選發送提醒">`
             : `<input type="checkbox" disabled style="width:20px; height:20px; margin:0; opacity:0.3;" title="未綁定 LINE 帳號，無法發送">`;
 
           html += `
             <div class="user-row">
               <div>
-                <b>${u.name}</b> ${boundBadge}
+                <b>${escapeHtml(u.name)}</b> ${boundBadge}
               </div>
               <div style="display: flex; align-items: center; gap: 10px;">
-                <button style="padding:6px 10px; font-size:12px; width:auto;" onclick="manualCheckIn('${u.name}')">代簽</button>
+                <button style="padding:6px 10px; font-size:12px; width:auto;" data-name="${escapeHtml(u.name)}" onclick="manualCheckIn(this.dataset.name)">代簽</button>
                 <label style="margin:0; display:flex; align-items:center;">
                   ${checkboxHtml}
                 </label>
@@ -526,15 +567,15 @@
   function sendRemindersToSelected() {
     const meeting = document.getElementById('adminMeetingSelect').value;
     const checkedBoxes = document.querySelectorAll('.remind-checkbox:checked');
-    const selectedIds = Array.from(checkedBoxes).map(cb => cb.value).filter(id => id && id.trim() !== "");
+    const selectedNames = Array.from(checkedBoxes).map(cb => cb.value).filter(n => n && n.trim() !== "");
 
-    if (selectedIds.length === 0) {
+    if (selectedNames.length === 0) {
       alert("請先勾選要發送提醒的同仁（僅限已綁定 LINE 帳號者）！");
       return;
     }
 
-    if (confirm(`確定要向勾選的 ${selectedIds.length} 位同仁發送【${meeting}】的 LINE 簽到提醒嗎？`)) {
-      callGasApi("sendReminders", { targetIds: selectedIds, meetingName: meeting })
+    if (confirm(`確定要向勾選的 ${selectedNames.length} 位同仁發送【${meeting}】的 LINE 簽到提醒嗎？`)) {
+      callGasApi("sendReminders", { targetNames: selectedNames, meetingName: meeting })
         .then(r => alert(r.message));
     }
   }
@@ -575,18 +616,18 @@ function loadSysAdminMeetings() {
   const badgeColor = isEnable ? '#28a745' : '#dc3545';
   
   // 將物件轉為安全的字串，防止 HTML 屬性破壞
-  const safeJson = JSON.stringify(m).replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+  const safeJson = escapeHtml(JSON.stringify(m));
   
   html += `
     <div style="background:#f8f9fa; border:1px solid #ddd; padding:12px; border-radius:8px; margin-bottom:10px; text-align:left;">
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <b style="font-size:16px;">${m.name}</b>
-        <span style="background:${badgeColor}; color:white; padding:2px 6px; border-radius:4px; font-size:12px;">${m.status}</span>
+        <b style="font-size:16px;">${escapeHtml(m.name)}</b>
+        <span style="background:${badgeColor}; color:white; padding:2px 6px; border-radius:4px; font-size:12px;">${escapeHtml(m.status)}</span>
       </div>
       <div style="font-size:13px; color:#555; margin-top:5px;">
-        📅 日期：${m.dateRule} (${m.startTime} - ${m.endTime})<br>
-        🔑 驗證碼：<b>${m.passcode || '無'}</b> | 👥 對象：${m.target}<br>
-        👤 管理員：${m.meetingAdmins || '無'}
+        📅 日期：${escapeHtml(m.dateRule)} (${escapeHtml(m.startTime)} - ${escapeHtml(m.endTime)})<br>
+        🔑 驗證碼：<b>${escapeHtml(m.passcode || '無')}</b> | 👥 對象：${escapeHtml(m.target)}<br>
+        👤 管理員：${escapeHtml(m.meetingAdmins || '無')}
       </div>
       <div style="margin-top:8px; display:flex; gap:8px;">
         <button style="padding:6px 10px; font-size:12px; background:#17a2b8; width:auto;" onclick="openMeetingEditModal(${safeJson})">✏️ 編輯</button>
@@ -671,4 +712,4 @@ function toggleStatus(rowIndex, newStatus) {
 </script>
 
 </body>
-</html>
+</html>

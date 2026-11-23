@@ -161,7 +161,7 @@ flowchart LR
 1. 前往 [LINE Developers Console](https://developers.line.biz/) 並登入。
 2. **設定 LINE Messaging API (LINE Bot)**：
    * 在「Messaging API」頁籤中產生 **Channel access token (long-lived)**。
-   * 將此 Token 填入試算表 `系統參數` 的 `LINE_CHANNEL_ACCESS_TOKEN` 欄位。
+   * 將此 Token 填入 Apps Script **「專案設定 > 指令碼屬性」**，屬性名稱 `LINE_CHANNEL_ACCESS_TOKEN`（建議，能看試算表的人就看不到 Token）；或沿用舊做法填入試算表 `系統參數` 的同名欄位。
    * 在「Webhook URL」貼上剛才第一步獲得的 **GAS Web App URL**，開啟「Use webhook」。
 3. **設定 LINE LIFF App**：
    * 新增一個 LIFF App，取得 **LIFF ID**。
@@ -173,7 +173,7 @@ flowchart LR
 ---
 
 ### 第三步：設定前端程式碼並發布至 GitHub Pages
-1. 開啟本機 [`index.html`](file:///c:/Users/huahu/OneDrive/Desktop/QRcode簽到/index.html)，搜尋並確認前兩行設定：
+1. 開啟專案中的 [`index.html`](index.html)，搜尋並確認前兩行設定：
    ```javascript
    const MY_LIFF_ID = "您的_LIFF_ID";
    const GAS_WEB_APP_URL = "您的_GAS_WEB_APP_URL";
@@ -182,6 +182,24 @@ flowchart LR
 3. 進入 GitHub Repository 的 **Settings > Pages**：
    * Branch 選擇 `main`，資料夾選擇 `/ (root)`，點擊 Save。
    * 幾秒後即可獲得專屬的 GitHub Pages 網址。
+
+---
+
+## 🔐 安全性設計
+
+| 項目 | 做法 |
+| :--- | :--- |
+| 身分驗證 | 前端每次呼叫都附上 `liff.getIDToken()`，後端向 LINE `oauth2/v2.1/verify` 驗證後才採信 userId；前端傳來的 `myLineUserId` 一律忽略。**LIFF Scope 必須勾選 `openid`。** |
+| Channel ID | 驗證 ID Token 需要 LINE Login Channel ID，系統會自動取 `LIFF_ID` 中「-」前面的數字；如不同，可在 `系統參數` 或指令碼屬性新增 `LINE_LOGIN_CHANNEL_ID`。 |
+| 管理權限 | 管理員看板、代簽、發送提醒都會在後端檢查「是否為該會議管理員或最高管理員」；提醒對象由後端依未簽到名單計算，不接受前端指定任意 LINE ID。 |
+| 現場驗證碼 | 一般教師的 API 回應不再包含驗證碼，只有會議現場的 QR Code / 投影才看得到。 |
+| 防暴力嘗試 | 綁定失敗：每個 LINE 帳號 1 小時 5 次、每個姓名 1 小時 10 次；驗證碼錯誤：每個帳號 10 分鐘 10 次。 |
+| 資料一致性 | 簽到、代簽、綁定使用 `LockService` 避免同時寫入造成重複紀錄；同一 LINE 帳號只能綁定一位教師。 |
+| 機敏設定 | `getSystemSetting()` 會先讀取指令碼屬性，再退回試算表 `系統參數`。 |
+
+> ⚠️ **更新程式後務必重新部署**：Apps Script「部署 > 管理部署作業 > 編輯 > 版本：新版本」，否則網址仍執行舊程式碼。
+>
+> ℹ️ **已知限制**：GAS `doPost` 無法讀取 HTTP 標頭，因此無法驗證 LINE Webhook 的 `X-Line-Signature`。目前 Bot 指令只透過 replyToken 回覆，偽造的事件拿不到任何資料，但若未來要加入會寫入資料的 Bot 指令，建議改用 Cloud Functions 等可讀標頭的中介層。
 
 ---
 
